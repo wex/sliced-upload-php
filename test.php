@@ -30,18 +30,19 @@ if (function_exists('request_parse_body')) {
     }
 }
 
+// Initialize datastore
 $ds = new \SlicedUpload\Datastore\Mysql(new PDO('mysql:host=localhost;dbname=t', 'root', ''));
+
+// Initialize sliced upload
 $t = new \SlicedUpload\SlicedUpload($ds);
 
-try {
+// Receive upload
+$t->receive(function ($tempFile) {
 
-    $t->receive(function ($tempFile) {
-        @unlink('output.mp4');
-        rename($tempFile, 'output.mp4');
-    });
+    // Delete existing output file
+    @unlink('output.mp4');
 
-} catch (\Throwable $e) {
-
-    echo $e;
-
-}
+    // Rename temp file to output file
+    rename($tempFile, 'output.mp4');
+    
+});
