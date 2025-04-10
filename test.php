@@ -1,10 +1,7 @@
 <?php
 
 // Autoloader
-
-use SlicedUpload\SlicedUpload;
-
-require_once __DIR__ . '/php/vendor/autoload.php';
+require_once __DIR__ . '/vendor/autoload.php';
 
 // Enable error reporting
 error_reporting(E_ALL);
@@ -33,7 +30,18 @@ if (function_exists('request_parse_body')) {
     }
 }
 
-// Server endpoint
-SlicedUpload::process(function ($tempFile) {
-    // Process chunk
-});
+$ds = new \SlicedUpload\Datastore\Mysql(new PDO('mysql:host=localhost;dbname=t', 'root', ''));
+$t = new \SlicedUpload\SlicedUpload($ds);
+
+try {
+
+    $t->receive(function ($tempFile) {
+        @unlink('output.mp4');
+        rename($tempFile, 'output.mp4');
+    });
+
+} catch (\Throwable $e) {
+
+    echo $e;
+
+}

@@ -3,164 +3,216 @@
 namespace SlicedUpload\SlicedUpload;
 
 use SlicedUpload\Helper;
+use SlicedUpload\IDatastore;
 
 class Upload
 {
-    public static $datastore = null;
+    protected $datastore;
+    protected $uuid;
+    protected $fileHash;
+    protected $fileName;
+    protected $fileSize;
+    protected $fileType;
+    protected $tempFile;
+    protected $nonce;
 
-    public $uuid;
-    public $fileHash;
-    public $fileName;
-    public $fileSize;
-    public $fileType;
-    public $tempFile;
-    public $nonce;
+    /**
+     * Constructor
+     *
+     * @param IDatastore $datastore 
+     * @param string $uuid
+     * @param string $fileHash
+     * @param string $tempFile
+     * @param string $fileName
+     * @param int $fileSize
+     * @param string $fileType
+     * @param string $nonce
+     */
+    public function __construct(
+        IDatastore $datastore,
+        $uuid,
+        $fileHash,
+        $fileName,
+        $fileSize,
+        $fileType,
+        $tempFile,
+        $nonce = null
+    ) {
+        $this->datastore = $datastore;
+        $this->uuid      = $uuid;
+        $this->fileHash  = $fileHash;
+        $this->fileName  = $fileName;
+        $this->fileSize  = $fileSize;
+        $this->fileType  = $fileType;
+        $this->tempFile  = $tempFile;
+        $this->nonce     = $nonce;
+    }
 
-    public function __construct($uuid, $fileHash, $tempFile, $fileName, $fileSize, $fileType, $nonce)
+    /**
+     * Check if the upload is completed
+     *
+     * @return bool
+     */
+    public function isCompleted()
     {
-        if (null === static::$datastore) {
+        $realSize = filesize($this->tempFile);
 
-            throw new \Exception('Datastore not set');
+        if ($realSize === false || $realSize > $this->fileSize) {
+
+            throw new \RuntimeException(
+                'Upload failed',
+                500
+            );
 
         }
 
-        $this->uuid     = $uuid;
-        $this->fileHash = $fileHash;
-        $this->tempFile = $tempFile;
-        $this->fileName = $fileName;
-        $this->fileSize = $fileSize;
-        $this->fileType = $fileType;
-        $this->nonce    = $nonce;
+        return $realSize === $this->fileSize;
     }
 
-    public static function create($fileHash, $fileName, $fileSize, $fileType)
+    /**
+     * Get the temporary file
+     * 
+     * @return string
+     */
+    public function getTempFile()
     {
-        $instance = new static(
-            Helper::uuid(),
-            $fileHash,
-            Helper::getTempFile(),
-            $fileName,
-            $fileSize,
-            $fileType,
-            Helper::uuid(),
-        );
-
-        if (!$instance->save()) {
-
-            @unlink($instance->tempFile);
-
-            throw new \Exception('Failed to create upload');
-
-        }
-
-        return $instance;
+        return $this->tempFile;
     }
 
-    public static function fetch($uuid)
+    /**
+     * Get the nonce
+     *
+     * @return void 
+     */
+    public function getNonce()
     {
-        $row = static::$datastore->findByKeys(
-            '__uploads',
-            ['uuid' => $uuid]
-        );
+        $this->nonce = $this->datastore->generateNonce();
+        $this->save();
 
-        if (empty($row)) {
-
-            throw new \Exception('Upload not found');
-
-        }
-
-        return new static(
-            $row['uuid'],
-            $row['file_hash'],
-            $row['temp_file'],
-            $row['file_name'],
-            $row['file_size'],
-            $row['file_type'],
-            $row['nonce']
-        );
+        return $this->nonce;
     }
 
-    public static function find($uuid, $nonce)
+    /**
+     * Get the UUID
+     *
+     * @return string
+     */
+    public function getUuid()
     {
-        $row = static::$datastore->findByKeys(
-            '__uploads',
-            [
-                'uuid' => $uuid,
-                'nonce' => $nonce
-            ]
-        );
-
-        if (empty($row)) {
-
-            throw new \Exception('Upload not found');
-
-        }
-
-        return new static(
-            $row['uuid'],
-            $row['file_hash'],
-            $row['temp_file'],
-            $row['file_name'],
-            $row['file_size'],
-            $row['file_type'],
-            $row['nonce']
-        );
+        return $this->uuid;
     }
 
-    protected function save()
+    /**
+     * Verify the nonce
+     * 
+     * @param string $nonce 
+     * @return bool 
+     */
+    public function verifyNonce($nonce)
     {
-        return static::$datastore->insertOrUpdate(
-            '__uploads',
-            [
-                'uuid'          => $this->uuid,
-                'temp_file'     => $this->tempFile,
-                'file_hash'     => $this->fileHash,
-                'file_name'     => $this->fileName,
-                'file_size'     => $this->fileSize,
-                'file_type'     => $this->fileType,
-                'nonce'         => $this->nonce,
-            ],
-            [
-                'uuid' => $this->uuid
-            ]
-        );
+        return (mb_strtolower($nonce) === mb_strtolower($this->nonce));
     }
 
-    public function verifyChunk(Chunk $chunk)
-    {
-        return $chunk->verify();
-    }
-
+    /**
+     * Append a chunk to the upload
+     *
+     * @param Chunk $chunk
+     * @return int 
+     */
     public function append(Chunk $chunk)
     {
-        file_put_contents(
+        // Append chunk to temp file
+        $bytesWritten = file_put_contents(
             $this->tempFile,
-            file_get_contents($chunk->getContent()),
+            $chunk->getContent(),
             FILE_APPEND
         );
 
         $chunk->delete();
 
-        $this->nonce = Helper::uuid();
+        if ($bytesWritten === false) {
 
-        if (!$this->save()) {
-
-            throw new \Exception('Failed to save upload');
+            throw new \RuntimeException(
+                'Failed to append chunk',
+                500
+            );
 
         }
 
-        return true;
+        return $bytesWritten;
     }
 
-    public function destroy()
+    /**
+     * Clear the temp file
+     *
+     * @return void 
+     */
+    public function clear()
     {
-        static::$datastore->delete(
-            '__uploads',
+        file_put_contents($this->tempFile, '');
+    }
+
+    /**
+     * Load the upload from the datastore
+     *
+     * @param mixed $uuid 
+     *
+     * @return static
+     */
+    public static function load(IDatastore $datastore, $uuid)
+    {
+        $data = $datastore->load(['uuid' => $uuid]);
+
+        return new static(
+            $datastore,
+            $data['uuid'],
+            $data['file_hash'],
+            $data['file_name'],
+            $data['file_size'],
+            $data['file_type'],
+            $data['temp_file'],
+            $data['nonce']
+        );
+    }
+
+    /**
+     * Save the upload to the datastore
+     *
+     * @return static
+     */
+    public function save()
+    {
+        $this->datastore->save(
             [
-                'uuid' => $this->uuid
+                'uuid'      => $this->uuid,
+                'temp_file' => $this->tempFile,
+                'file_hash' => $this->fileHash,
+                'file_name' => $this->fileName,
+                'file_size' => $this->fileSize,
+                'file_type' => $this->fileType,
+                'nonce'     => $this->nonce,
+            ],
+            [
+                'uuid'      => $this->uuid
             ]
         );
-     
+
+        return $this;
+    }
+
+    /**
+     * Destroy the upload
+     *
+     * @return true 
+     */
+    public function destroy()
+    {
+        // Delete from datastore
+        $this->datastore->delete([
+            'uuid' => $this->uuid
+        ]);
+
+        // Delete temp file
         if (file_exists($this->tempFile)) {
 
             unlink($this->tempFile);

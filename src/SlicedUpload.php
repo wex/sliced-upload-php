@@ -10,19 +10,48 @@ class SlicedUpload
 {
     const DEFAULT_MAXIMUM_CHUNK_SIZE = 1_048_576;
 
+    protected $datastore;
     protected $maximumChunkSize = self::DEFAULT_MAXIMUM_CHUNK_SIZE;
     protected $callback;
 
     /**
      * Constructor
      * 
-     * @param int $maximumChunkSize 
+     * @param int|null $maximumChunkSize 
      *
      * @return void 
      */
-    public function __construct($maximumChunkSize = self::DEFAULT_MAXIMUM_CHUNK_SIZE)
+    public function __construct(IDatastore $datastore, $maximumChunkSize = null)
     {
+        if (null === $maximumChunkSize) {
+
+            $maximumChunkSize = self::DEFAULT_MAXIMUM_CHUNK_SIZE;
+
+        }
+
+        $this->datastore = $datastore;
         $this->maximumChunkSize = $maximumChunkSize;
+    }
+
+    /**
+     * Get a temporary file
+     *
+     * @return string
+     */
+    public static function getTempFile()
+    {
+        $name = tempnam(
+            ini_get('upload_tmp_dir') ?: sys_get_temp_dir(),
+            'sliced-upload'
+        );
+
+        if ($name === false) {
+
+            throw new \RuntimeException('Failed to create temporary file');
+
+        }
+
+        return $name;
     }
 
     /**
@@ -56,25 +85,34 @@ class SlicedUpload
         return (mb_strtoupper(hash_file('sha256', $file)) === mb_strtoupper($hash));
     }
 
-    // @todo rewrite
-    public static function process(callable $callback, Datastore $datastore)
+    /**
+     * Receive an upload
+     *
+     * @param callable $callback
+     *
+     * @return void
+     */
+    public function receive(callable $callback)
     {
-        Upload::$datastore = $datastore;
-        
-        $instance = new static();
-        $instance->callback = $callback;
+        $this->callback = \Closure::fromCallable($callback);
 
         switch (strtoupper($_SERVER['REQUEST_METHOD'])) {
-            case 'POST': return $instance->readHandshake();
-            case 'PATCH': return $instance->readChunk();
-            case 'DELETE': return $instance->readCancel();
-            #case 'HEAD': return $instance->readStatus();
+            case 'POST':    return $this->readHandshake();
+            case 'PATCH':   return $this->readChunk();
+            case 'DELETE':  return $this->readCancel();
+            // @todo implement
+            #case 'HEAD':    return $instance->readStatus();
         }
 
         throw new \RuntimeException(sprintf(
             'Invalid method: %s',
             $_SERVER['REQUEST_METHOD']
         ), 500);
+    }
+
+    public function getUpload($uuid): Upload
+    {
+        return Upload::load($this->datastore, $uuid);
     }
 
     /**
@@ -85,7 +123,7 @@ class SlicedUpload
      * @param string|null $default 
      * @return mixed 
      */
-    protected function fromRequest(string $key, bool $isRequired = true, string $default = null)
+    protected function fromRequest(string $key, bool $isRequired = true, ?string $default = null)
     {
         if (!isset($_POST[$key])) {
 
@@ -127,7 +165,7 @@ class SlicedUpload
      */
     protected function isCompleted(Upload $upload)
     {
-        return filesize($upload->tempFile) >= $upload->fileSize;
+        return $upload->isCompleted();
     }
 
     /**
@@ -148,27 +186,40 @@ class SlicedUpload
             );
 
             // Find upload
-            $upload = Upload::find($uuid, $nonce);
+            $upload = $this->getUpload($uuid);
+
+            // Verify nonce
+            if (!$upload->verifyNonce($nonce)) {
+
+                throw new \RuntimeException(
+                    'Invalid nonce',
+                    400
+                );
+
+            }
 
             // Append chunk to upload
-            $bytesWritten =$upload->append($chunk);
+            $bytesWritten = $upload->append($chunk);
 
             // Process chunk
-            if ($this->isCompleted($upload)) {
+            if (!$this->isCompleted($upload)) {
 
                 // If upload is not complete, send 202 with new nonce and bytes written
                 return $this->respond([
-                    'nonce' => $upload->nonce,
+                    'nonce' => $upload->getNonce(),
                     'size' => $bytesWritten,
                 ], 202);            
 
             } else {
 
                 // Call callback
-                call_user_func($this->callback, $upload->tempFile);
+                $this->callback->call($this, $upload->getTempFile());
+
+                // Destroy upload
+                $upload->destroy();
 
                 // If upload is not complete, send 200 with bytes written
-                return Helper::ok([
+                return $this->respond([
                     'size' => $bytesWritten,
                 ], 200);   
 
@@ -179,6 +230,7 @@ class SlicedUpload
             $this->respond([
                 'error' => $e->getMessage(),
             ], $e->getCode());
+
         }
     }
 
@@ -196,19 +248,28 @@ class SlicedUpload
             $fileSize = $this->fromRequest('size');
             $fileType = $this->fromRequest('type');
 
-            // Create upload
-            $upload = Upload::create(
-                $fileHash, 
-                $fileName, 
-                $fileSize, 
-                $fileType
+            // New upload
+            $upload = new Upload(
+                $this->datastore,
+                $this->datastore->generateUuid(),
+                $fileHash,
+                $fileName,
+                $fileSize,
+                $fileType,
+                static::getTempFile()
             );
+
+            // Save upload
+            $upload->save();
+
+            // Initialize temp file
+            $upload->clear();
 
             // Respond 201 with upload UUID, nonce and max chunk size
             return $this->respond([
-                'uuid' => $upload->uuid,
-                'nonce' => $upload->nonce,
-                'max_size' => Helper::getMaxSize(),
+                'uuid' => $upload->getUuid(),
+                'nonce' => $upload->getNonce(),
+                'max_size' => $this->maximumChunkSize,
             ], 201);
 
         } catch (\Exception $e) {
@@ -216,18 +277,24 @@ class SlicedUpload
             $this->respond([
                 'error' => $e->getMessage(),
             ], $e->getCode());
+
         }
     }
 
+    /**
+     * Read a cancel
+     *
+     * @return void 
+     */
     protected function readCancel()
     {
         try {
 
-            $uuid = Request::post('uuid');
+            $uuid = $this->fromRequest('uuid');
 
-            // Fetch upload
-            $upload = Upload::fetch($uuid);
-            
+            // Find upload
+            $upload = $this->getUpload($uuid);
+
             // Delete upload
             $upload->destroy();
 
@@ -239,6 +306,7 @@ class SlicedUpload
             $this->respond([
                 'error' => $e->getMessage(),
             ], $e->getCode());
+
         }
     }
 }
