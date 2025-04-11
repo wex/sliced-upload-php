@@ -42,7 +42,7 @@ class Upload
         $this->uuid      = $uuid;
         $this->fileHash  = $fileHash;
         $this->fileName  = $fileName;
-        $this->fileSize  = $fileSize;
+        $this->fileSize  = intval($fileSize);
         $this->fileType  = $fileType;
         $this->tempFile  = $tempFile;
         $this->nonce     = $nonce;
@@ -66,7 +66,7 @@ class Upload
 
         }
 
-        return $realSize === $this->fileSize;
+        return intval($realSize) === intval($this->fileSize);
     }
 
     /**
