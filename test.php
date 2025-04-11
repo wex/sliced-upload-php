@@ -31,7 +31,8 @@ if (function_exists('request_parse_body')) {
 }
 
 // Initialize datastore
-$ds = new \SlicedUpload\Datastore\Mysql(new PDO('mysql:host=localhost;dbname=t', 'root', ''));
+//$ds = new \SlicedUpload\Datastore\Mysql(new PDO('mysql:host=localhost;dbname=t', 'root', ''));
+$ds = new \SlicedUpload\Datastore\Redis(new \Redis());
 
 // Initialize sliced upload
 $t = new \SlicedUpload\SlicedUpload($ds);

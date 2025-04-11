@@ -3,9 +3,7 @@
 namespace SlicedUpload\Datastore;
 
 use PDO;
-use Random\RandomException;
 use SlicedUpload\IDatastore;
-use SlicedUpload\SlicedUpload\Upload;
 
 class Mysql implements IDatastore
 {
@@ -48,6 +46,27 @@ class Mysql implements IDatastore
     public function generateNonce(): string
     {
         return hash('crc32b', random_bytes(16));
+    }
+
+    /**
+     * See if a row exists by given keys
+     *
+     * @param array $keys 
+     *
+     * @return bool 
+     */
+    public function exists(array $keys): bool
+    {
+        $sql = sprintf(
+            'SELECT COUNT(*) FROM `%s` WHERE %s',
+            static::TABLE,
+            implode(
+                ' AND ',
+                $this->_kvpToWhere($keys)
+            )
+        );
+
+        return $this->pdo->query($sql)->fetchColumn(0) > 0;
     }
 
     /**
