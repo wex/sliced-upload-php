@@ -1,7 +1,7 @@
 <?php
 
 // Autoloader
-require_once __DIR__ . '/vendor/autoload.php';
+require_once __DIR__ . '/../vendor/autoload.php';
 
 // Enable error reporting
 error_reporting(E_ALL);
